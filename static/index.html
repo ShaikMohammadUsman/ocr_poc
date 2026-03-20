@@ -1711,7 +1711,7 @@
                             <span class="upload-icon floating">📂</span>
                             <h2>New Document Extraction</h2>
                             <p>Drag &amp; drop your PDF here to begin automated processing</p>
-                            <input type="file" id="file-input" accept=".pdf,application/pdf" />
+                            <input type="file" id="file-input" accept=".pdf,application/pdf" multiple />
                             <button class="btn btn-primary" onclick="document.getElementById('file-input').click()"
                                 style="margin-top: 24px;">
                                 📁 Choose File
@@ -1759,6 +1759,8 @@
                             </div>
                             <div class="result-meta" id="result-meta"></div>
                         </div>
+
+                        <div id="warnings-container" style="display:none; margin-bottom: 24px; background: rgba(251, 146, 60, 0.1); border: 1px solid var(--accent-orange); padding: 16px; border-radius: var(--radius-md); color: var(--text-slate);"></div>
 
                         <div class="tabs" id="page-tabs"></div>
 
@@ -1831,7 +1833,7 @@
         const pagePanels = document.getElementById('page-panels');
         const extractBtn = document.getElementById('extract-btn');
 
-        let selectedFile = null;
+        let selectedFiles = [];
         window._kvStore = {}; // safe global store for KV data, avoids inline JSON in onclick
 
         // ── Interactive Glow Effect
@@ -1851,25 +1853,37 @@
         dropZone.addEventListener('drop', e => {
             e.preventDefault();
             dropZone.classList.remove('drag-over');
-            const f = e.dataTransfer.files[0];
-            if (f) handleFile(f);
+            const files = Array.from(e.dataTransfer.files);
+            if (files.length) handleFiles(files);
         });
         dropZone.addEventListener('click', e => {
             if (e.target.tagName === 'BUTTON') return;
             fileInput.click();
         });
         fileInput.addEventListener('change', () => {
-            if (fileInput.files[0]) handleFile(fileInput.files[0]);
+            if (fileInput.files.length) handleFiles(Array.from(fileInput.files));
         });
 
-        function handleFile(f) {
-            if (!f.name.toLowerCase().endsWith('.pdf')) {
-                showError('Only PDF files are supported. Please select a .pdf file.');
+        function handleFiles(files) {
+            const validFiles = files.filter(f => f.name.toLowerCase().endsWith('.pdf'));
+            if (validFiles.length === 0) {
+                showError('Only PDF files are supported. Please select .pdf files.');
                 return;
             }
-            selectedFile = f;
-            fnameEl.textContent = f.name;
-            fsizeEl.textContent = formatBytes(f.size);
+            if (validFiles.length > 5) {
+                showError('Maximum 5 files can be uploaded.');
+                return;
+            }
+            selectedFiles = validFiles;
+            
+            if (selectedFiles.length === 1) {
+                fnameEl.textContent = selectedFiles[0].name;
+                fsizeEl.textContent = formatBytes(selectedFiles[0].size);
+            } else {
+                fnameEl.textContent = `${selectedFiles.length} files selected`;
+                const totalSize = selectedFiles.reduce((acc, f) => acc + f.size, 0);
+                fsizeEl.textContent = formatBytes(totalSize);
+            }
             fileInfo.classList.add('visible');
             hideError();
             resultSection.classList.remove('visible');
@@ -1883,13 +1897,13 @@
 
         // ── Extract
         async function startExtraction() {
-            if (!selectedFile) return;
+            if (!selectedFiles.length) return;
             extractBtn.disabled = true;
             hideError();
-            showProgress(10, 'Uploading PDF…', 'Sending file to Azure Document Intelligence…');
+            showProgress(10, 'Uploading PDFs…', 'Sending files to Azure Document Intelligence…');
 
             const form = new FormData();
-            form.append('file', selectedFile);
+            selectedFiles.forEach(f => form.append('files', f));
 
             // Fake progress steps while we wait
             const steps = [
@@ -1933,40 +1947,64 @@
             hideProgress();
             extractBtn.disabled = false;
 
+            if (data.warnings && data.warnings.length > 0) {
+                 const warnContainer = document.getElementById('warnings-container');
+                 warnContainer.innerHTML = data.warnings.map(w => `<div style="color:var(--accent-orange); margin-bottom: 5px;">⚠️ ${escHtml(w)}</div>`).join('');
+                 warnContainer.style.display = 'block';
+            } else {
+                 const warnContainer = document.getElementById('warnings-container');
+                 if (warnContainer) warnContainer.style.display = 'none';
+            }
+
             // Store doc text for chat
-            window._docText = data.full_text || '';
-            window._docFilename = data.filename || 'Document';
+            let fullTextAll = "";
+            let totalPages = 0;
+            let hasHandwriting = false;
+            let hasTables = false;
+
+            // Build tabs
+            pageTabs.innerHTML = '';
+            pagePanels.innerHTML = '';
+
+            data.results.forEach((res, idx) => {
+                totalPages += res.page_count;
+                fullTextAll += "\n\n=== " + res.filename + " ===\n\n" + res.full_text;
+                hasHandwriting = hasHandwriting || res.has_handwriting;
+                hasTables = hasTables || res.has_tables;
+
+                const prefix = `file${idx}`;
+                const shortName = res.filename.length > 15 ? res.filename.substring(0, 15) + '...' : res.filename;
+                
+                addTab(`${prefix}_cat`, `🗂️ ${shortName} Data`, idx === 0);
+                addPanel(`${prefix}_cat`, buildCategorizedPanel(res.key_values), idx === 0);
+
+                addTab(`${prefix}_ai`, `🤖 ${shortName} JSON`);
+                addPanel(`${prefix}_ai`, buildAiPanel(res.key_values, prefix));
+
+                addTab(`${prefix}_all`, `📄 ${shortName} Text`);
+                addPanel(`${prefix}_all`, buildAllPanel(res, prefix));
+
+                res.pages.forEach(pg => {
+                    addTab(`${prefix}_pg-${pg.page_num}`, `${shortName} P${pg.page_num}`);
+                    addPanel(`${prefix}_pg-${pg.page_num}`, buildPagePanel(pg, prefix, res.filename));
+                });
+            });
+
+            window._docText = fullTextAll;
+            window._docFilename = selectedFiles.map(f => f.name).join(', ');
             setChatReady(true, window._docFilename);
 
             // Meta chips
             const metaEl = document.getElementById('result-meta');
             metaEl.innerHTML = '';
-            metaEl.innerHTML += `<span class="meta-chip">📄 ${data.page_count} page${data.page_count !== 1 ? 's' : ''}</span>`;
-            if (data.has_handwriting)
+            metaEl.innerHTML += `<span class="meta-chip">📄 ${totalPages} pages</span>`;
+            if (hasHandwriting)
                 metaEl.innerHTML += `<span class="meta-chip yellow">✍️ Handwriting</span>`;
-            if (data.has_tables)
+            if (hasTables)
                 metaEl.innerHTML += `<span class="meta-chip green">📊 Tables</span>`;
 
             document.getElementById('page-count-info').textContent =
-                `File: ${data.filename}  ·  ${data.page_count} page${data.page_count !== 1 ? 's' : ''} extracted`;
-
-            // Build tabs: "AI Data" first, then "All" + per-page
-            pageTabs.innerHTML = '';
-            pagePanels.innerHTML = '';
-
-            // AI Key-Value tab (first, most useful)
-            addTab('ai', '🤖 AI Data', true);
-            addPanel('ai', buildAiPanel(data.key_values), true);
-
-            // All-text tab
-            addTab('all', '📄 All Pages');
-            addPanel('all', buildAllPanel(data));
-
-            // Per-page tabs
-            data.pages.forEach(pg => {
-                addTab(`pg-${pg.page_num}`, `Page ${pg.page_num}`);
-                addPanel(`pg-${pg.page_num}`, buildPagePanel(pg));
-            });
+                `Files: ${selectedFiles.length}  ·  ${totalPages} pages extracted`;
 
             // Add AI chip
             metaEl.innerHTML += `<span class="meta-chip" style="border-color:var(--accent);color:var(--accent2);background:rgba(99,102,241,0.1)">🤖 AI Extracted</span>`;
@@ -1997,15 +2035,58 @@
             document.querySelectorAll('.page-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + id));
         }
 
-        function buildAiPanel(kv) {
-            const storeId = 'kv_' + Date.now();
+        function buildAiPanel(kv, prefix = '') {
+            const storeId = 'kv_' + Date.now() + Math.random().toString(36).slice(2);
             window._kvStore[storeId] = kv;  // store safely, not inlined in HTML
             return `
       <div class="ai-header">
         <div class="ai-title">🤖 Structured Key-Value Extraction</div>
         <button class="btn-copy" data-kv-id="${storeId}" onclick="copyRaw(this)">📋 Copy JSON</button>
       </div>
-      <div class="json-viewer" id="ai-json-viewer">${renderJsonNode(kv, 0)}</div>`;
+      <div class="json-viewer" id="ai-json-viewer-${prefix}">${renderJsonNode(kv, 0)}</div>`;
+        }
+
+        function buildCategorizedPanel(kv) {
+            const categories = ['Income', 'Expenses', 'Taxes', 'Other'];
+            // Also include any other top-level keys just in case model ignored instruction
+            const allKeys = Object.keys(kv || {});
+            const extraKeys = allKeys.filter(k => !categories.includes(k));
+            const displayKeys = [...categories, ...extraKeys];
+
+            let html = '<div style="display:flex; flex-direction:column; gap:20px; padding: 20px 0;">';
+            let hasData = false;
+
+            displayKeys.forEach(cat => {
+                const val = (kv || {})[cat];
+                const hasValue = val !== undefined && val !== null && (typeof val !== 'object' || Object.keys(val).length > 0 || (Array.isArray(val) && val.length > 0));
+                
+                if (hasValue) {
+                    hasData = true;
+                    // Provide a nice icon per category
+                    let icon = '📁';
+                    if (cat === 'Income') icon = '💰';
+                    if (cat === 'Expenses') icon = '💸';
+                    if (cat === 'Taxes') icon = '🏛️';
+                    if (cat === 'Other') icon = '📎';
+
+                    html += `
+                        <div style="background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-xl); overflow:hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
+                            <div style="padding: 16px 24px; background: rgba(255,255,255,0.03); border-bottom: 1px solid var(--border); font-size: 1.1rem; font-weight: 700; color: var(--text-slate); display:flex; align-items:center; gap:10px;">
+                                <span>${icon}</span> ${escHtml(cat)}
+                            </div>
+                            <div class="json-viewer" style="border:none; border-radius:0; max-height: none; padding: 20px 24px; background: transparent;">
+                                ${renderJsonNode(val, 0)}
+                            </div>
+                        </div>
+                    `;
+                }
+            });
+
+            if (!hasData) {
+               html += '<div style="color:var(--text-dim); padding: 40px; text-align:center; font-size: 1.1rem;">No categorized data found.</div>';
+            }
+            html += '</div>';
+            return html;
         }
 
         // ── JSON tree renderer
@@ -2091,21 +2172,21 @@
             });
         }
 
-        function buildAllPanel(data) {
+        function buildAllPanel(data, prefix = '') {
             const txt = escHtml(data.full_text || '(No text extracted)');
             return `
       <div class="copy-row">
-        <button class="btn-copy" onclick="copyText(this, 'all-text')">📋 Copy All</button>
+        <button class="btn-copy" onclick="copyText(this, 'all-text-${prefix}')">📋 Copy All</button>
       </div>
-      <div class="text-box" id="all-text">${txt}</div>`;
+      <div class="text-box" id="all-text-${prefix}">${txt}</div>`;
         }
 
         // global store for table grid data  (populated in buildPagePanel)
         window._tableStore = {};
 
-        function buildPagePanel(pg) {
+        function buildPagePanel(pg, prefix = '', filename = '') {
             const text = pg.text || '(No text on this page)';
-            const panelId = `text-pg-${pg.page_num}`;
+            const panelId = `text-pg-${prefix}-${pg.page_num}`;
             let html = `
       <div class="copy-row">
         <button class="btn-copy" onclick="copyText(this, '${panelId}')">📋 Copy Page</button>
@@ -2114,14 +2195,14 @@
 
             if (pg.tables) {
                 // Store the raw 2-D grids so the download button can reach them
-                const storeKey = `tbl_pg${pg.page_num}`;
+                const storeKey = `tbl_${prefix}_pg${pg.page_num}`;
                 window._tableStore[storeKey] = pg.tables_data || [];
 
                 html += `
         <div class="table-section">
           <div class="table-label" style="display:flex;align-items:center;justify-content:space-between;">
             <span>📊 Tables on this page</span>
-            <button class="btn-csv" onclick="downloadTableCSV('${storeKey}', ${pg.page_num})">⬇️ Export CSV</button>
+            <button class="btn-csv" onclick="downloadTableCSV('${storeKey}', ${pg.page_num}, '${filename}')">⬇️ Export CSV</button>
           </div>
           <div class="text-box" style="max-height:300px; margin-top:8px;">${escHtml(pg.tables)}</div>
         </div>`;
@@ -2143,7 +2224,7 @@
             });
         }
 
-        function downloadTableCSV(storeKey, pageNum) {
+        function downloadTableCSV(storeKey, pageNum, filename) {
             const grids = window._tableStore[storeKey];
             if (!grids || grids.length === 0) {
                 alert('No table data available for this page.');
@@ -2176,7 +2257,7 @@
             const a = document.createElement('a');
             a.href = url;
             // Use the original filename stem if available, fallback to 'document'
-            const stem = (window._docFilename || 'document').replace(/\.pdf$/i, '');
+            const stem = (filename || 'document').replace(/\.pdf$/i, '');
             a.download = `${stem}_page${pageNum}_tables.csv`;
             document.body.appendChild(a);
             a.click();
@@ -2197,7 +2278,7 @@
         function hideError() { errorBox.classList.remove('visible'); }
 
         function resetAll() {
-            selectedFile = null;
+            selectedFiles = [];
             fileInput.value = '';
             fileInfo.classList.remove('visible');
             resultSection.classList.remove('visible');
