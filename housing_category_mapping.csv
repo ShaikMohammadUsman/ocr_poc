@@ -1,0 +1,8 @@
+Category,Possible Field Names
+Property Details,"Address, Property Address, Unit, City, State, ZIP, APN, Parcel Number, Square Footage, Sqft, Year Built, Property Type, Lot Size, Legal Description"
+Financials & Mortgages,"Loan Amount, Principal Balance, Interest Rate, Note Rate, Monthly Payment, P&I, LTV, Appraisal Value, Down Payment, Escrow Amount, Closing Costs, Origination Fee"
+Taxes & Insurance,"Property Tax, Annual Taxes, Assessed Value, HOA Dues, Monthly HOA, Homeowners Insurance, Insurance Premium, PMI, Flood Insurance, Hazard Insurance"
+Parties Involved,"Buyer, Purchaser, Seller, Owner, Lender, Mortgagee, Borrower, Mortgagor, Agent, Realtor, Escrow Officer, Notary Public, Title Company"
+Key Dates,"Closing Date, Settlement Date, Application Date, Note Date, Maturity Date, Expiration Date, Inspection Date, Signature Date"
+Income & Assets,"Applicant Income, Co-Applicant Income, Base Salary, W2 Income, Paystub Amount, Bank Balance, Liquid Assets, Earnest Money Deposit, EMD, Proof of Funds"
+Other,"Any other miscellaneous fields not covered by the above categories"
