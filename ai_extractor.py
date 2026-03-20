@@ -7,6 +7,7 @@ it can identify from the document, as a flat or nested JSON object.
 import os
 import json
 import re
+import csv
 from openai import AzureOpenAI
 from dotenv import load_dotenv
 
@@ -26,20 +27,45 @@ def _get_client() -> AzureOpenAI:
     return _client
 
 
-SYSTEM_PROMPT = """You are a highly accurate document data extractor.
+def get_system_prompt() -> str:
+    categories = []
+    mapping_text = ""
+    csv_path = os.path.join(os.path.dirname(__file__), "housing_category_mapping.csv")
+    if os.path.exists(csv_path):
+        with open(csv_path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                cat = row["Category"]
+                fields = row["Possible Field Names"]
+                categories.append(cat)
+                mapping_text += f"- {cat}: Use this for fields like {fields}\n"
+    
+    if not categories:
+        categories = ["Income", "Expenses", "Taxes", "Other"]
+        mapping_text = "- No explicit mapping provided.\n"
+
+    top_level_keys = ", ".join(f'"{c}"' for c in categories)
+
+    return f"""You are a highly accurate document data extractor.
 Your job is to read the raw text extracted from a PDF document and identify
 every meaningful key-value pair, field, or piece of structured information present.
 
+Crucially, you must group these fields under specific top-level categories: {top_level_keys}.
+
+Use the following mapping as a strict source of truth to categorize fields:
+{mapping_text}
+
 Rules:
 - Return ONLY a valid JSON object. No markdown fences, no explanation.
+- The JSON object must consist of the following top-level keys: {top_level_keys}.
+- Classify each extracted key-value pair strictly into one of these categories based on the mapping above.
 - Use clean, human-readable key names (e.g. "Full Name", "Date of Birth", "Invoice Total").
 - If a section has multiple items (e.g. a list of products, education history),
-  represent them as an array of objects under an appropriate key.
+  represent them as an array of objects under an appropriate key within its category.
 - If a value is a table, represent it as a list of row objects.
-- Group related fields under a nested object if it makes semantic sense
-  (e.g. "Address": {"Street": "...", "City": "...", "PIN": "..."}).
+- Group related fields under a nested object if it makes semantic sense.
 - Do NOT skip any field you can identify — be as exhaustive as possible.
-- If something is unclear, include it with a best-guess key.
+- If something is unclear, include it with a best-guess key in the "{categories[-1] if categories else 'Other'}" category.
 - Never return null values; use empty string "" if value is missing/illegible.
 """
 
@@ -69,7 +95,7 @@ def extract_key_values(ocr_text: str) -> dict:
     response = client.chat.completions.create(
         model=os.getenv("AZURE_DEPLOYMENT_NAME", "gpt-4o-mini"),
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": get_system_prompt()},
             {"role": "user", "content": USER_PROMPT_TEMPLATE.format(text=text)},
         ],
         temperature=0,
