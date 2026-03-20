@@ -38,32 +38,84 @@ async def root():
         return HTMLResponse(content=f.read())
 
 
+from typing import List
+
 @app.post("/extract", summary="Extract text + structured data from a PDF")
-async def extract(file: UploadFile = File(...)):
+async def extract(files: List[UploadFile] = File(...)):
     """
-    Upload a PDF file and receive:
+    Upload up to 5 PDF files and receive:
     - Extracted text (per page)
     - Table content
     - AI-generated key-value pairs (JSON) via GPT-4o-mini
     """
-    allowed_types = {"application/pdf", "application/octet-stream"}
-    if file.content_type not in allowed_types and not (file.filename or "").lower().endswith(".pdf"):
+    if len(files) > 5:
         raise HTTPException(
             status_code=400,
-            detail="Only PDF files are supported. Please upload a .pdf file.",
+            detail="Maximum 5 files can be uploaded."
         )
 
-    # Step 1: OCR extraction
-    ocr_result = await extract_text_with_ocr(file)
+    allowed_types = {"application/pdf", "application/octet-stream"}
+    results = []
 
-    # Step 2: AI structured key-value extraction
-    try:
-        kv_data = extract_key_values(ocr_result["full_text"])
-    except Exception as e:
-        kv_data = {"error": f"AI extraction failed: {str(e)}"}
+    for file in files:
+        fname = file.filename or f"Document_{len(results)+1}.pdf"
+        if file.content_type not in allowed_types and not fname.lower().endswith(".pdf"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Only PDF files are supported. {fname} is not a valid PDF.",
+            )
 
-    ocr_result["key_values"] = kv_data
-    return JSONResponse(content=ocr_result)
+        # Step 1: OCR extraction
+        ocr_result = await extract_text_with_ocr(file)
+
+        # Step 2: AI structured key-value extraction
+        try:
+            kv_data = extract_key_values(ocr_result["full_text"])
+        except Exception as e:
+            kv_data = {"error": f"AI extraction failed: {str(e)}"}
+
+        ocr_result["key_values"] = kv_data
+        ocr_result["filename"] = fname
+        results.append(ocr_result)
+
+    # Detect Overlapping Months
+    MONTH_MAP = {
+        "january": "January", "jan": "January",
+        "february": "February", "feb": "February",
+        "march": "March", "mar": "March",
+        "april": "April", "apr": "April",
+        "may": "May",
+        "june": "June", "jun": "June",
+        "july": "July", "jul": "July",
+        "august": "August", "aug": "August",
+        "september": "September", "sep": "September",
+        "october": "October", "oct": "October",
+        "november": "November", "nov": "November",
+        "december": "December", "dec": "December"
+    }
+
+    import re
+    file_months = {}
+    for res in results:
+        found = set()
+        text_lower = res.get("full_text", "").lower()
+        for m, full in MONTH_MAP.items():
+            if re.search(r'\b' + m + r'\b', text_lower):
+                found.add(full)
+        file_months[res["filename"]] = found
+        
+    overlaps = {}
+    for filename, months in file_months.items():
+        for m in months:
+            overlaps.setdefault(m, []).append(filename)
+            
+    warnings = []
+    for m, fnames in overlaps.items():
+        if len(fnames) > 1:
+            joined_fnames = " and ".join(fnames) if len(fnames) == 2 else ", ".join(fnames[:-1]) + ", and " + fnames[-1]
+            warnings.append(f"these files {joined_fnames} are over lapring with the {m} data")
+
+    return JSONResponse(content={"results": results, "warnings": warnings})
 
 
 @app.get("/health")
