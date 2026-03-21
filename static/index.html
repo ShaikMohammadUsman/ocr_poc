@@ -890,12 +890,20 @@
             border-radius: var(--radius-md);
             border: 1px solid var(--border);
             overflow-x: auto;
-            scrollbar-width: none;
-            -ms-overflow-style: none;
         }
 
         .tabs::-webkit-scrollbar {
-            display: none;
+            height: 8px;
+        }
+        
+        .tabs::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 4px;
+        }
+
+        .tabs::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
         }
 
         .tab-btn {
@@ -1974,12 +1982,13 @@
 
                 const prefix = `file${idx}`;
                 const shortName = res.filename.length > 15 ? res.filename.substring(0, 15) + '...' : res.filename;
+                const monthsStr = (res.detected_months || []).join(', ');
                 
                 addTab(`${prefix}_cat`, `🗂️ ${shortName} Data`, idx === 0);
-                addPanel(`${prefix}_cat`, buildCategorizedPanel(res.key_values), idx === 0);
+                addPanel(`${prefix}_cat`, buildCategorizedPanel(res.key_values, prefix, monthsStr), idx === 0);
 
                 addTab(`${prefix}_ai`, `🤖 ${shortName} JSON`);
-                addPanel(`${prefix}_ai`, buildAiPanel(res.key_values, prefix));
+                addPanel(`${prefix}_ai`, buildAiPanel(res.key_values, prefix, monthsStr));
 
                 addTab(`${prefix}_all`, `📄 ${shortName} Text`);
                 addPanel(`${prefix}_all`, buildAllPanel(res, prefix));
@@ -2035,25 +2044,74 @@
             document.querySelectorAll('.page-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + id));
         }
 
-        function buildAiPanel(kv, prefix = '') {
+        function buildAiPanel(kv, prefix = '', monthsStr = '') {
             const storeId = 'kv_' + Date.now() + Math.random().toString(36).slice(2);
             window._kvStore[storeId] = kv;  // store safely, not inlined in HTML
             return `
       <div class="ai-header">
         <div class="ai-title">🤖 Structured Key-Value Extraction</div>
-        <button class="btn-copy" data-kv-id="${storeId}" onclick="copyRaw(this)">📋 Copy JSON</button>
+        <div style="display:flex; gap:10px;">
+            <button class="btn-csv" data-kv-id="${storeId}" data-months="${monthsStr}" onclick="downloadAiExcel(this, '${prefix}')">⬇️ Download as Excel</button>
+            <button class="btn-copy" data-kv-id="${storeId}" onclick="copyRaw(this)">📋 Copy JSON</button>
+        </div>
       </div>
       <div class="json-viewer" id="ai-json-viewer-${prefix}">${renderJsonNode(kv, 0)}</div>`;
         }
 
-        function buildCategorizedPanel(kv) {
-            const categories = ['Income', 'Expenses', 'Taxes', 'Other'];
-            // Also include any other top-level keys just in case model ignored instruction
-            const allKeys = Object.keys(kv || {});
-            const extraKeys = allKeys.filter(k => !categories.includes(k));
-            const displayKeys = [...categories, ...extraKeys];
+        function downloadAiExcel(btn, prefix) {
+            const id = btn.dataset.kvId;
+            const monthsStr = btn.dataset.months || '';
+            const kv = window._kvStore[id];
+            if (!kv) return;
+            
+            let tableHtml = '<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body><table border="1"><tr><th>Category</th><th>Normalized Field</th><th>Value</th><th>Date/Month</th></tr>';
+            
+            function processObject(obj, currentCat, path) {
+                if (typeof obj === 'object' && obj !== null && !Array.isArray(obj)) {
+                    for (const [k, v] of Object.entries(obj)) {
+                        processObject(v, currentCat, path ? `${path} > ${k}` : k);
+                    }
+                } else if (Array.isArray(obj)) {
+                    for (let i = 0; i < obj.length; i++) {
+                        processObject(obj[i], currentCat, path ? `${path} [${i+1}]` : `[${i+1}]`);
+                    }
+                } else {
+                    const val = escHtml(String(obj ?? ''));
+                    const field = escHtml(String(path ?? ''));
+                    const cat = escHtml(String(currentCat ?? ''));
+                    const dt = escHtml(String(monthsStr));
+                    tableHtml += `<tr><td>${cat}</td><td>${field}</td><td>${val}</td><td>${dt}</td></tr>`;
+                }
+            }
+            
+            for (const [cat, data] of Object.entries(kv)) {
+                processObject(data, cat, "");
+            }
+            
+            tableHtml += '</table></body></html>';
+            
+            const blob = new Blob([tableHtml], { type: 'application/vnd.ms-excel;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `extracted_data_${prefix}.xls`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+        }
 
-            let html = '<div style="display:flex; flex-direction:column; gap:20px; padding: 20px 0;">';
+        function buildCategorizedPanel(kv, prefix='', monthsStr='') {
+            const displayKeys = Object.keys(kv || {});
+
+            const storeId = 'kv_cat_' + Date.now() + Math.random().toString(36).slice(2);
+            window._kvStore[storeId] = kv;
+
+            let html = `
+            <div style="display:flex; justify-content:flex-end; margin-bottom: -10px; position:relative; z-index:10;">
+                <button class="btn-csv" data-kv-id="${storeId}" data-months="${monthsStr}" onclick="downloadAiExcel(this, '${prefix}')">⬇️ Download Data as Excel</button>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:20px; padding: 20px 0;">`;
             let hasData = false;
 
             displayKeys.forEach(cat => {
@@ -2064,10 +2122,10 @@
                     hasData = true;
                     // Provide a nice icon per category
                     let icon = '📁';
-                    if (cat === 'Income') icon = '💰';
-                    if (cat === 'Expenses') icon = '💸';
-                    if (cat === 'Taxes') icon = '🏛️';
-                    if (cat === 'Other') icon = '📎';
+                    if (cat.toLowerCase() === 'income') icon = '💰';
+                    if (cat.toLowerCase() === 'expense' || cat.toLowerCase() === 'expenses') icon = '💸';
+                    if (cat.toLowerCase() === 'taxes') icon = '🏛️';
+                    if (cat.toLowerCase() === 'other') icon = '📎';
 
                     html += `
                         <div style="background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-xl); overflow:hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
