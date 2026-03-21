@@ -103,6 +103,7 @@ async def extract(files: List[UploadFile] = File(...)):
             if re.search(r'\b' + m + r'\b', text_lower):
                 found.add(full)
         file_months[res["filename"]] = found
+        res["detected_months"] = list(found)
         
     overlaps = {}
     for filename, months in file_months.items():
