@@ -895,7 +895,7 @@
         .tabs::-webkit-scrollbar {
             height: 8px;
         }
-        
+
         .tabs::-webkit-scrollbar-track {
             background: rgba(255, 255, 255, 0.05);
             border-radius: 4px;
@@ -1768,7 +1768,9 @@
                             <div class="result-meta" id="result-meta"></div>
                         </div>
 
-                        <div id="warnings-container" style="display:none; margin-bottom: 24px; background: rgba(251, 146, 60, 0.1); border: 1px solid var(--accent-orange); padding: 16px; border-radius: var(--radius-md); color: var(--text-slate);"></div>
+                        <div id="warnings-container"
+                            style="display:none; margin-bottom: 24px; background: rgba(251, 146, 60, 0.1); border: 1px solid var(--accent-orange); padding: 16px; border-radius: var(--radius-md); color: var(--text-slate);">
+                        </div>
 
                         <div class="tabs" id="page-tabs"></div>
 
@@ -1883,7 +1885,7 @@
                 return;
             }
             selectedFiles = validFiles;
-            
+
             if (selectedFiles.length === 1) {
                 fnameEl.textContent = selectedFiles[0].name;
                 fsizeEl.textContent = formatBytes(selectedFiles[0].size);
@@ -1956,12 +1958,12 @@
             extractBtn.disabled = false;
 
             if (data.warnings && data.warnings.length > 0) {
-                 const warnContainer = document.getElementById('warnings-container');
-                 warnContainer.innerHTML = data.warnings.map(w => `<div style="color:var(--accent-orange); margin-bottom: 5px;">⚠️ ${escHtml(w)}</div>`).join('');
-                 warnContainer.style.display = 'block';
+                const warnContainer = document.getElementById('warnings-container');
+                warnContainer.innerHTML = data.warnings.map(w => `<div style="color:var(--accent-orange); margin-bottom: 5px;">⚠️ ${escHtml(w)}</div>`).join('');
+                warnContainer.style.display = 'block';
             } else {
-                 const warnContainer = document.getElementById('warnings-container');
-                 if (warnContainer) warnContainer.style.display = 'none';
+                const warnContainer = document.getElementById('warnings-container');
+                if (warnContainer) warnContainer.style.display = 'none';
             }
 
             // Store doc text for chat
@@ -1983,12 +1985,13 @@
                 const prefix = `file${idx}`;
                 const shortName = res.filename.length > 15 ? res.filename.substring(0, 15) + '...' : res.filename;
                 const monthsStr = (res.detected_months || []).join(', ');
-                
+                const knownFields = res.known_fields || [];
+
                 addTab(`${prefix}_cat`, `🗂️ ${shortName} Data`, idx === 0);
-                addPanel(`${prefix}_cat`, buildCategorizedPanel(res.key_values, prefix, monthsStr), idx === 0);
+                addPanel(`${prefix}_cat`, buildCategorizedPanel(res.key_values, prefix, monthsStr, knownFields), idx === 0);
 
                 addTab(`${prefix}_ai`, `🤖 ${shortName} JSON`);
-                addPanel(`${prefix}_ai`, buildAiPanel(res.key_values, prefix, monthsStr));
+                addPanel(`${prefix}_ai`, buildAiPanel(res.key_values, prefix, monthsStr, knownFields));
 
                 addTab(`${prefix}_all`, `📄 ${shortName} Text`);
                 addPanel(`${prefix}_all`, buildAllPanel(res, prefix));
@@ -2044,14 +2047,16 @@
             document.querySelectorAll('.page-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + id));
         }
 
-        function buildAiPanel(kv, prefix = '', monthsStr = '') {
+        function buildAiPanel(kv, prefix = '', monthsStr = '', knownFields = []) {
             const storeId = 'kv_' + Date.now() + Math.random().toString(36).slice(2);
             window._kvStore[storeId] = kv;  // store safely, not inlined in HTML
+            const kfStr = escHtml(JSON.stringify(knownFields));
+            window._currentKnownFields = knownFields;
             return `
       <div class="ai-header">
         <div class="ai-title">🤖 Structured Key-Value Extraction</div>
         <div style="display:flex; gap:10px;">
-            <button class="btn-csv" data-kv-id="${storeId}" data-months="${monthsStr}" onclick="downloadAiExcel(this, '${prefix}')">⬇️ Download as Excel</button>
+            <button class="btn-csv" data-kv-id="${storeId}" data-months="${monthsStr}" data-known-fields="${kfStr}" onclick="downloadAiExcel(this, '${prefix}')">⬇️ Download as Excel</button>
             <button class="btn-copy" data-kv-id="${storeId}" onclick="copyRaw(this)">📋 Copy JSON</button>
         </div>
       </div>
@@ -2061,35 +2066,44 @@
         function downloadAiExcel(btn, prefix) {
             const id = btn.dataset.kvId;
             const monthsStr = btn.dataset.months || '';
+            let knownFields = [];
+            try { knownFields = JSON.parse(btn.dataset.knownFields || '[]'); } catch (e) { }
             const kv = window._kvStore[id];
             if (!kv) return;
-            
-            let tableHtml = '<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body><table border="1"><tr><th>Category</th><th>Normalized Field</th><th>Value</th><th>Date/Month</th></tr>';
-            
-            function processObject(obj, currentCat, path) {
+
+            let tableHtml = '<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body><table border="1"><tr><th>Category</th><th>Normalized Field</th><th>Value</th><th>Date/Month</th><th>Notes / Source Flag</th></tr>';
+
+            function processObject(obj, currentCat, path, topLevelKey) {
                 if (typeof obj === 'object' && obj !== null && !Array.isArray(obj)) {
                     for (const [k, v] of Object.entries(obj)) {
-                        processObject(v, currentCat, path ? `${path} > ${k}` : k);
+                        processObject(v, currentCat, path ? `${path} > ${k}` : k, topLevelKey || k);
                     }
                 } else if (Array.isArray(obj)) {
                     for (let i = 0; i < obj.length; i++) {
-                        processObject(obj[i], currentCat, path ? `${path} [${i+1}]` : `[${i+1}]`);
+                        processObject(obj[i], currentCat, path ? `${path} [${i + 1}]` : `[${i + 1}]`, topLevelKey);
                     }
                 } else {
                     const val = escHtml(String(obj ?? ''));
                     const field = escHtml(String(path ?? ''));
                     const cat = escHtml(String(currentCat ?? ''));
                     const dt = escHtml(String(monthsStr));
-                    tableHtml += `<tr><td>${cat}</td><td>${field}</td><td>${val}</td><td>${dt}</td></tr>`;
+
+                    let sourceFlag = "New Category";
+                    if (topLevelKey && knownFields.includes(topLevelKey)) {
+                        sourceFlag = "Categorized by looking into excel";
+                    }
+                    if (cat === 'Other' || !cat) sourceFlag = "New Category";
+
+                    tableHtml += `<tr><td>${cat}</td><td>${field}</td><td>${val}</td><td>${dt}</td><td>${sourceFlag}</td></tr>`;
                 }
             }
-            
+
             for (const [cat, data] of Object.entries(kv)) {
-                processObject(data, cat, "");
+                processObject(data, cat, "", null);
             }
-            
+
             tableHtml += '</table></body></html>';
-            
+
             const blob = new Blob([tableHtml], { type: 'application/vnd.ms-excel;charset=utf-8' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -2101,15 +2115,17 @@
             setTimeout(() => URL.revokeObjectURL(url), 2000);
         }
 
-        function buildCategorizedPanel(kv, prefix='', monthsStr='') {
+        function buildCategorizedPanel(kv, prefix = '', monthsStr = '', knownFields = []) {
             const displayKeys = Object.keys(kv || {});
 
             const storeId = 'kv_cat_' + Date.now() + Math.random().toString(36).slice(2);
             window._kvStore[storeId] = kv;
+            const kfStr = escHtml(JSON.stringify(knownFields));
+            window._currentKnownFields = knownFields;
 
             let html = `
             <div style="display:flex; justify-content:flex-end; margin-bottom: -10px; position:relative; z-index:10;">
-                <button class="btn-csv" data-kv-id="${storeId}" data-months="${monthsStr}" onclick="downloadAiExcel(this, '${prefix}')">⬇️ Download Data as Excel</button>
+                <button class="btn-csv" data-kv-id="${storeId}" data-months="${monthsStr}" data-known-fields="${kfStr}" onclick="downloadAiExcel(this, '${prefix}')">⬇️ Download Data as Excel</button>
             </div>
             <div style="display:flex; flex-direction:column; gap:20px; padding: 20px 0;">`;
             let hasData = false;
@@ -2117,7 +2133,7 @@
             displayKeys.forEach(cat => {
                 const val = (kv || {})[cat];
                 const hasValue = val !== undefined && val !== null && (typeof val !== 'object' || Object.keys(val).length > 0 || (Array.isArray(val) && val.length > 0));
-                
+
                 if (hasValue) {
                     hasData = true;
                     // Provide a nice icon per category
@@ -2141,7 +2157,7 @@
             });
 
             if (!hasData) {
-               html += '<div style="color:var(--text-dim); padding: 40px; text-align:center; font-size: 1.1rem;">No categorized data found.</div>';
+                html += '<div style="color:var(--text-dim); padding: 40px; text-align:center; font-size: 1.1rem;">No categorized data found.</div>';
             }
             html += '</div>';
             return html;
@@ -2149,6 +2165,8 @@
 
         // ── JSON tree renderer
         function renderJsonNode(obj, depth) {
+            const knownFields = window._currentKnownFields || [];
+
             if (obj === null) return '<span class="jv-val-null">null</span>';
             if (typeof obj === 'boolean') return `<span class="jv-val-bool">${obj}</span>`;
             if (typeof obj === 'number') return `<span class="jv-val-number">${obj}</span>`;
@@ -2177,6 +2195,16 @@
                 const rows = keys.map(k => {
                     const val = obj[k];
                     const isComplex = typeof val === 'object' && val !== null;
+
+                    let flagHtml = '';
+                    if (depth === 1 || depth === 0) {
+                        if (knownFields.includes(k)) {
+                            flagHtml = '<span style="font-size:0.75rem; color:var(--primary-green); margin-left:12px; border:1px solid var(--primary-green); padding:2px 6px; border-radius:4px; font-weight:normal; user-select:none;">Categorized by looking into excel</span>';
+                        } else if (k && !["Income", "Expense", "Taxes", "Other"].includes(k)) {
+                            flagHtml = '<span style="font-size:0.75rem; color:#fca5a5; margin-left:12px; border:1px solid #fca5a5; padding:2px 6px; border-radius:4px; font-weight:normal; user-select:none;">New Category</span>';
+                        }
+                    }
+
                     if (isComplex) {
                         const id = 'jvg_' + Math.random().toString(36).slice(2);
                         const label = Array.isArray(val) ? `[${val.length}]` : `{${Object.keys(val).length}}`;
@@ -2184,13 +2212,13 @@
             <div class="jv-row" style="flex-direction:column;align-items:flex-start">
               <div class="jv-group-header" onclick="toggleGroup('${id}')">
                 <span class="jv-toggle open" id="tog_${id}">▶</span>
-                <span class="jv-key">${escHtml(k)}</span>
+                <span class="jv-key">${escHtml(k)}${flagHtml}</span>
                 <span class="jv-badge">${label}</span>
               </div>
               <div class="jv-group" id="${id}"><div class="jv-group-body">${renderJsonNode(val, depth + 1)}</div></div>
             </div>`;
                     }
-                    return `<div class="jv-row"><div class="jv-key">${escHtml(k)}</div><div class="jv-sep">:</div><div>${renderJsonNode(val, depth + 1)}</div></div>`;
+                    return `<div class="jv-row"><div class="jv-key">${escHtml(k)}${flagHtml}</div><div class="jv-sep">:</div><div>${renderJsonNode(val, depth + 1)}</div></div>`;
                 }).join('');
                 return rows;
             }
