@@ -76,6 +76,21 @@ async def extract(files: List[UploadFile] = File(...)):
 
         ocr_result["key_values"] = kv_data
         ocr_result["filename"] = fname
+        import csv
+        known = set()
+        categories = {"Metadata", "Income", "Expense", "Other"}
+        csv_path = os.path.join(os.path.dirname(__file__), "housing_category_mapping.csv")
+        if os.path.exists(csv_path):
+            with open(csv_path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    norm = row.get("Normalized Name", "").strip()
+                    cat = row.get("Category", "").strip()
+                    if norm: known.add(norm)
+                    if cat: categories.add(cat)
+        ocr_result["known_fields"] = list(known)
+        ocr_result["categories"] = list(categories)
+
         results.append(ocr_result)
 
     # Detect Overlapping Months
@@ -94,27 +109,87 @@ async def extract(files: List[UploadFile] = File(...)):
         "december": "December", "dec": "December"
     }
 
+    # Enhanced Overlapping Month detection
     import re
-    file_months = {}
+    from datetime import datetime
+    
+    def extract_periods(text, ai_data=None):
+        text_lower = text.lower()
+        found_periods = set()
+        
+        # 0. Try to use AI-extracted metadata first (highly reliable)
+        if ai_data and "Metadata" in ai_data:
+            meta = ai_data["Metadata"]
+            m = meta.get("statement_month", "").strip()
+            y = meta.get("statement_year", "").strip()
+            if m and y:
+                # Normalize month name
+                m_norm = MONTH_MAP.get(m.lower(), m.capitalize())
+                found_periods.add(f"{m_norm} {y}")
+                return found_periods # If AI found it, we trust it
+
+        # 1. Look for definitive Month Year patterns (e.g. "January 2024", "Jan 2024", "2024 January")
+        month_names = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
+        month_shorts = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+        all_months = month_names + month_shorts
+        
+        month_regex = "|".join(all_months)
+        year_regex = r"(20\d{2})"
+        
+        # Pattern: Month Year or Month, Year
+        pattern1 = rf"\b({month_regex})\b[\s,.-]*\b{year_regex}\b"
+        for m in re.finditer(pattern1, text_lower):
+            m_str = m.group(1)
+            y_str = m.group(2)
+            full_m = MONTH_MAP.get(m_str, m_str.capitalize())
+            found_periods.add(f"{full_m} {y_str}")
+            
+        # Pattern: Year Month
+        pattern2 = rf"\b{year_regex}\b[\s,.-]*\b({month_regex})\b"
+        for m in re.finditer(pattern2, text_lower):
+            y_str = m.group(1)
+            m_str = m.group(2)
+            full_m = MONTH_MAP.get(m_str, m_str.capitalize())
+            found_periods.add(f"{full_m} {y_str}")
+            
+        # 2. If no "Month Year" pair found, look for ANY year and ANY month
+        if not found_periods:
+            detected_months = set()
+            for m_key, full_m in MONTH_MAP.items():
+                if re.search(rf"\b{m_key}\b", text_lower):
+                    detected_months.add(full_m)
+            
+            detected_years = set(re.findall(r"\b20\d{2}\b", text_lower))
+            
+            if detected_months:
+                if len(detected_years) == 1:
+                    year = list(detected_years)[0]
+                    for m in detected_months:
+                        found_periods.add(f"{m} {year}")
+                else:
+                    # Fallback to month only
+                    for m in detected_months:
+                        found_periods.add(m)
+                        
+        return found_periods
+
+    # Use a list of (filename, periods) to handle duplicate filenames
+    file_info_list = []
     for res in results:
-        found = set()
-        text_lower = res.get("full_text", "").lower()
-        for m, full in MONTH_MAP.items():
-            if re.search(r'\b' + m + r'\b', text_lower):
-                found.add(full)
-        file_months[res["filename"]] = found
-        res["detected_months"] = list(found)
+        periods = extract_periods(res.get("full_text", ""), res.get("key_values"))
+        file_info_list.append((res["filename"], periods))
+        res["detected_months"] = list(periods)
         
     overlaps = {}
-    for filename, months in file_months.items():
-        for m in months:
-            overlaps.setdefault(m, []).append(filename)
+    for filename, periods in file_info_list:
+        for p in periods:
+            overlaps.setdefault(p, []).append(filename)
             
     warnings = []
-    for m, fnames in overlaps.items():
+    for period, fnames in overlaps.items():
         if len(fnames) > 1:
             joined_fnames = " and ".join(fnames) if len(fnames) == 2 else ", ".join(fnames[:-1]) + ", and " + fnames[-1]
-            warnings.append(f"these files {joined_fnames} are over lapring with the {m} data")
+            warnings.append(f"The files {joined_fnames} appear to overlap for the period: {period}")
 
     return JSONResponse(content={"results": results, "warnings": warnings})
 
