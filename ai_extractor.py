@@ -50,6 +50,10 @@ def get_system_prompt() -> str:
         categories = ["Income", "Expense", "Other"]
         mapping_text = "- No explicit mapping provided.\n"
 
+    # Always add 'Metadata' for document-level info
+    if "Metadata" not in categories:
+        categories.insert(0, "Metadata")
+
     # Always add 'Other' just in case
     if "Other" not in categories:
         categories.append("Other")
@@ -71,13 +75,14 @@ you must change its field name exactly to the unquoted Normalized name and place
 Rules:
 - Return ONLY a valid JSON object. No markdown fences, no explanation.
 - The JSON object must consist of the top-level keys: {top_level_keys}.
+- Use the "Metadata" category for document-level information. You MUST include two fields if found: "statement_month" (full name like 'January') and "statement_year" (4-digit string like '2024'). Also include Account Number, Billing Date, Document Type, Entity Name, etc.
 - Normalize the extracted key-value pairs to the specified names and categories based on the mapping above.
 - If a section has multiple items (e.g. a list of products, education history),
   represent them as an array of objects under an appropriate key within its category.
 - If a value is a table, represent it as a list of row objects.
 - Group related fields under a nested object if it makes semantic sense.
 - Do NOT skip any field you can identify — be as exhaustive as possible.
-- If a field is found that doesn't fit the mapping, include it with a clean descriptive key in the "Other" category.
+- If a field is found that doesn't fit the mapping, include it with a clean descriptive key in its most relevant category. If truly unknown, use "Other".
 - Never return null values; use empty string "" if value is missing/illegible.
 """
 
